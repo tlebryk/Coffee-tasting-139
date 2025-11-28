@@ -9,7 +9,11 @@ output: pdf_document
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(lme4)
-library(lmerTest)
+# lmerTest provides p-values for lmer models; install with: install.packages("lmerTest")
+# If not installed, we'll use lme4 alone and get p-values via anova()
+if (requireNamespace("lmerTest", quietly = TRUE)) {
+  library(lmerTest)
+}
 ```
 
 ## Introduction
@@ -303,14 +307,17 @@ The baseline models above treated observations as independent, but our data has 
 We fit a mixed effects model with participant as a random intercept to account for individual differences in baseline ratings.
 
 ```{r}
-# Create participant ID
+# Create participant ID - each participant has 3 rows (one per coffee type)
 coffee_long <- coffee_long %>%
-  mutate(participant_id = rep(1:nrow(coffee_cleaned), each = 3))
+  mutate(participant_id = rep(1:29, each = 3))
 
 # Fit mixed effects model
 model3 <- lmer(rating ~ coffee_type + (1 | participant_id), data = coffee_long)
 summary(model3)
+
+# Test for coffee type effect
 anova(model3)
+# If lmerTest is loaded, this will show p-values; otherwise shows F-values
 ```
 
 The mixed effects model shows [results will appear here]. The random intercept for participant accounts for the correlation between ratings from the same person. The F-test tests whether mean ratings differ across coffee types.
@@ -321,13 +328,13 @@ To test our specific research questions, we examine the estimated differences:
 # Extract fixed effects
 fixef(model3)
 
-# Branding effect: Flour - Dunkin
+# Branding effect: Flour - Dunkin (same coffee, different cup)
 branding_effect <- fixef(model3)["coffee_typeflour"]
-cat("Branding effect (Flour - Dunkin):", branding_effect, "\n")
+cat("Branding effect (Flour - Dunkin):", round(branding_effect, 3), "\n")
 
-# Taste effect: Swissbakers - Dunkin  
+# Taste effect: Swissbakers - Dunkin (different coffee)
 taste_effect <- fixef(model3)["coffee_typeswissbakers"]
-cat("Taste effect (Swissbakers - Dunkin):", taste_effect, "\n")
+cat("Taste effect (Swissbakers - Dunkin):", round(taste_effect, 3), "\n")
 ```
 
 ### Model 4: Testing Expertise Moderation
@@ -336,17 +343,27 @@ We now test whether coffee consumption (expertise) moderates the ability to dete
 
 ```{r}
 # Add cups per week to long format
+# Ensure participant_id exists (in case this chunk is run independently)
+if (!"participant_id" %in% names(coffee_long)) {
+  coffee_long <- coffee_long %>%
+    mutate(participant_id = rep(1:29, each = 3))
+}
+
+# Add cupsperweek by replicating each participant's value 3 times
 coffee_long <- coffee_long %>%
-  left_join(coffee_cleaned %>% 
-              mutate(participant_id = row_number()) %>%
-              select(participant_id, cupsperweek),
-            by = "participant_id")
+  mutate(cupsperweek = rep(coffee$cupsperweek, each = 3))
+
+# Verify cupsperweek was added
+head(coffee_long %>% select(participant_id, coffee_type, rating, cupsperweek))
 
 # Fit model with interaction
 model4 <- lmer(rating ~ coffee_type * cupsperweek + (1 | participant_id), 
                data = coffee_long)
 summary(model4)
+
+# Test for effects
 anova(model4)
+# If lmerTest is loaded, this will show p-values; otherwise shows F-values
 ```
 
 The interaction term tests whether the relationship between coffee type and rating depends on weekly coffee consumption. Specifically, we're interested in whether the Swissbakers vs Dunkin difference is larger for heavier coffee drinkers.
