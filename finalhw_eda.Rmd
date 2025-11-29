@@ -8,12 +8,11 @@ output: pdf_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
-library(lme4)
-# lmerTest provides p-values for lmer models; install with: install.packages("lmerTest")
-# If not installed, we'll use lme4 alone and get p-values via anova()
-if (requireNamespace("lmerTest", quietly = TRUE)) {
-  library(lmerTest)
-}
+library(pwr)
+
+library(psych)
+
+dir.create("figures", showWarnings = FALSE)
 ```
 
 ## Introduction
@@ -41,6 +40,7 @@ The data were collected by our group during an in-person coffee tasting held in 
 coffee <- read.csv("coffee_tasting.csv")
 head(coffee)
 dim(coffee)
+
 ```
 
 The dataset contains data from 29 participants, with row per participant with the following variables:
@@ -49,9 +49,9 @@ The dataset contains data from 29 participants, with row per participant with th
 | ------------------ | -------------- | -------------------------------------------------------------------------- |
 | **time**           | Character      | Clock time when the participant tasted the coffee                          |
 | **time_indicator** | Integer        | Ordered index of tasting times (1 = earliest, increases with session time) |
-| **flour**          | Integer (1–10) | Rating of the Dunkin coffee served in a **Flour Bakery** cup               |
-| **dunkin**         | Integer (1–10) | Rating of the Dunkin coffee served in a **Dunkin** cup                     |
-| **swissbakers**    | Integer (1–10) | Rating of the Swissbakers coffee served in a **Swissbakers** cup           |
+| **flour**          | Integer (1-10) | Rating of the Dunkin coffee served in a **Flour Bakery** cup               |
+| **dunkin**         | Integer (1-10) | Rating of the Dunkin coffee served in a **Dunkin** cup                     |
+| **swissbakers**    | Integer (1-10) | Rating of the Swissbakers coffee served in a **Swissbakers** cup           |
 | **cupsperweek**    | Integer        | Self-reported number of cups of coffee consumed per week                   |
 
 
@@ -80,6 +80,7 @@ There are no missing values in any column.
 Next, we can look at univariate summary statistics for each variable we plan to use in our analysis.
 ```{r}
 summary(coffee_cleaned)
+describe(coffee)
 ```
 
 The summary statistics indicate that the dataset is clean and aligns with expectations from our tasting experiment. All three coffee rating variables fall within the intended 1-10 scale, with no implausible values. The relative values of the means also appear reasonable with the highest mean rating for Dunkin coffee in a Flour cup and the lowest mean rating for Dunkin coffee in a Dunkin cup. For cups per week, the values range from 0 to 21, which is a plausible range and doesn't contain any negative or extremely high values. The mean of 6.69 cups / week is reasonable. Overall, the summary table seems to indicate there are no data entry problems.
@@ -89,28 +90,32 @@ coffee_long <- coffee_cleaned %>%
   pivot_longer(cols = c(flour, dunkin, swissbakers), names_to = "coffee_type",
                values_to = "rating")
 
-ggplot(coffee_long, aes(x = rating, fill = coffee_type)) +
+p <- ggplot(coffee_long, aes(x = rating, fill = coffee_type)) +
   geom_histogram(binwidth = 1, color = "white", alpha = 0.7) +
   facet_wrap(~ coffee_type, nrow = 1) +
   scale_x_continuous(breaks = 1:10) +
   labs(title = "Distribution of Coffee Ratings",
-       x = "Rating (1–10)",
+       x = "Rating (1-10)",
        y = "Count") +
   theme_bw() +
   theme(legend.position = "none")
+print(p)
+ggsave("figures/fig02_rating_histograms.pdf", p, width = 10, height = 4)
 ```
 
 The histograms show clear differences in the distributions of coffee ratings. Dunkin has a right-skewed distribution, with a majority of ratings falling between 2-4. Flour and Swissbakers follow somewhat bimodal distributions, with Flour having higher peaks around 4 and 6 and Swissbakers have smaller peaks around 2 and 7. These histograms suggest that people generally rated Dunkin coffee poorly and that the branding effects of Flour and Swissbakers had variable effects on different participants.
 
 
 ```{r}
-ggplot(coffee_long, aes(x = coffee_type, y = rating, fill = coffee_type)) +
+p <- ggplot(coffee_long, aes(x = coffee_type, y = rating, fill = coffee_type)) +
   geom_boxplot(alpha = 0.8) +
   labs(title = "Comparison of Ratings Across Coffee Types",
        x = "Coffee Type",
        y = "Rating") +
   theme_minimal() +
   theme(legend.position = "none")
+print(p)
+ggsave("figures/fig03_rating_boxplots.pdf", p, width = 6, height = 4)
 ```
 
 The boxplots show differences in central tendency and spread, with results that are consistent with what we saw in the histograms. Flour has the highest median rating, followed by Swissbakers, and then Dunkin. Here, the Swissbakers distribution appears roughly symmetric with the widest interquartile range. The Flour ratings show a compressed middle range, but extend upward with an outlier at 10. Dunkin shows a roughly symmetric interquartile range, but has a longer upper tail and an outlier at 9. Given the right skew of the Dunking ratings, it may make sense to fit a model with this variable log transformed.
@@ -118,18 +123,22 @@ The boxplots show differences in central tendency and spread, with results that 
 
 
 ```{r}
-ggplot(coffee_cleaned, aes(x = cupsperweek)) +
+p <- ggplot(coffee_cleaned, aes(x = cupsperweek)) +
   geom_histogram(binwidth = 1, color = "white", fill = "lightblue") +
   labs(title = "Distribution of Weekly Coffee Consumption",
        x = "Cups per Week",
        y = "Count") +
   theme_minimal()
+print(p)
+ggsave("figures/fig01_cups_histogram.pdf", p, width = 6, height = 4)
 
-ggplot(coffee_cleaned, aes(y = cupsperweek)) +
+p <- ggplot(coffee_cleaned, aes(y = cupsperweek)) +
   geom_boxplot(fill = "lightblue", alpha = 0.8) +
   labs(title = "Boxplot of Weekly Coffee Consumption",
        y = "Cups per Week") +
   theme_minimal()
+print(p)
+ggsave("figures/fig01b_cups_boxplot.pdf", p, width = 6, height = 4)
 ```
 
 Weekly coffee consumption follows a right-skewed distribution.
@@ -138,31 +147,70 @@ Weekly coffee consumption follows a right-skewed distribution.
 
 Next, we'll explore relationships between variables, examining how the three coffee ratings relate to one another and how these ratings vary with weekly coffee consumption.
 
+#### Individual Rating Trajectories
+
+Since each participant rated all three coffees, we can visualize individual trajectories to see how ratings changed across coffee types.
+
+```{r, fig.width=10, fig.height=6}
+
+coffee_cleaned <- coffee_cleaned %>%
+  mutate(participant_id = row_number())
+
+# Reshape for trajectory plot
+coffee_trajectories <- coffee_cleaned %>%
+  pivot_longer(cols = c(dunkin, flour, swissbakers),
+               names_to = "coffee_type",
+               values_to = "rating") %>%
+  mutate(coffee_type = factor(coffee_type, levels = c("dunkin", "flour", "swissbakers")))
+
+# Plot individual trajectories
+p <- ggplot(coffee_trajectories, aes(x = coffee_type, y = rating, group = participant_id)) +
+  geom_line(alpha = 0.3, color = "gray50") +
+  geom_point(alpha = 0.4, size = 1) +
+  stat_summary(aes(group = 1), fun = mean, geom = "line",
+               color = "red", size = 1.5, linetype = "solid") +
+  stat_summary(aes(group = 1), fun = mean, geom = "point",
+               color = "red", size = 3) +
+  labs(title = "Individual Rating Trajectories Across Coffee Types",
+       subtitle = "Red line shows mean ratings",
+       x = "Coffee Type",
+       y = "Rating (1-10)") +
+  theme_minimal()
+print(p)
+ggsave("figures/fig04_trajectories.pdf", p, width = 8, height = 5)
+```
+
 First, we'll take a look at all three pairwise combinations of ratings:
 ```{r}
-ggplot(coffee_cleaned, aes(x = dunkin, y = flour)) +
+p <- ggplot(coffee_cleaned, aes(x = dunkin, y = flour)) +
   geom_point(alpha = 0.7) +
   geom_smooth(method = "lm", se = FALSE, color = "red") +
   labs(title = "Dunkin vs. Flour Ratings",
        x = "Dunkin Rating",
        y = "Flour Rating") +
   theme_minimal()
+print(p)
+ggsave("figures/fig05_dunkin_vs_flour.pdf", p, width = 6, height = 4)
 
-ggplot(coffee_cleaned, aes(x = dunkin, y = swissbakers)) +
+p <- ggplot(coffee_cleaned, aes(x = dunkin, y = swissbakers)) +
   geom_point(alpha = 0.7) +
   geom_smooth(method = "lm", se = FALSE, color = "red") +
   labs(title = "Dunkin vs. Swissbakers Ratings",
        x = "Dunkin Rating",
        y = "Swissbakers Rating") +
   theme_minimal()
+print(p)
+ggsave("figures/fig06_dunkin_vs_swiss.pdf", p, width = 6, height = 4)
 
-ggplot(coffee_cleaned, aes(x = flour, y = swissbakers)) +
+p <- ggplot(coffee_cleaned, aes(x = flour, y = swissbakers)) +
   geom_point(alpha = 0.7) +
   geom_smooth(method = "lm", se = FALSE, color = "red") +
   labs(title = "Flour vs. Swissbakers Ratings",
        x = "Flour Rating",
        y = "Swissbakers Rating") +
   theme_minimal()
+print(p)
+ggsave("figures/fig07_flour_vs_swiss.pdf", p, width = 6, height = 4)
 ```
 
 Across all pairwise comparisons, the scatterplots show positive, though fairly weak linear associations between coffee ratings. This means that across coffee ratings, if a participant gave one coffee a higher rating, they tended to also give the other coffees a higher rating. This relationship is strongest between Swissbakers and Dunkin.
@@ -186,19 +234,23 @@ coffee_cleaned <- coffee_cleaned %>% mutate(
     taste_diff = swissbakers - dunkin
   )
 
-ggplot(coffee_cleaned, aes(x = branding_diff)) +
+p <- ggplot(coffee_cleaned, aes(x = branding_diff)) +
   geom_histogram(binwidth = 1, fill = "lightgreen", color = "white") +
   labs(title = "Branding Effect (Flour - Dunkin)",
        x = "Difference in Rating",
        y = "Count") +
   theme_minimal()
+print(p)
+ggsave("figures/fig08_branding_diff.pdf", p, width = 6, height = 4)
 
-ggplot(coffee_cleaned, aes(x = taste_diff)) +
+p <- ggplot(coffee_cleaned, aes(x = taste_diff)) +
   geom_histogram(binwidth = 1, fill = "lightblue", color = "white") +
   labs(title = "Taste Difference (Swissbakers - Dunkin)",
        x = "Difference in Rating",
        y = "Count") +
   theme_minimal()
+print(p)
+ggsave("figures/fig09_taste_diff.pdf", p, width = 6, height = 4)
 
 ```
 
@@ -209,13 +261,15 @@ In the second histogram, we see a distribution of the difference between the Swi
 
 Finally, we'll look at the difference in coffee ratings for Dunkin and Flour vs weekly coffee consumption:
 ```{r}
-ggplot(coffee_cleaned, aes(x = cupsperweek, y = taste_diff)) +
+p <- ggplot(coffee_cleaned, aes(x = cupsperweek, y = taste_diff)) +
   geom_point(alpha = 0.7) +
   geom_smooth(method = "lm", se = FALSE, color = "red") +
   labs(title = "Taste Difference vs Coffee Consumption",
        x = "Cups per Week",
        y = "Swissbakers - Dunkin") +
   theme_minimal()
+print(p)
+ggsave("figures/fig10_taste_vs_consumption.pdf", p, width = 6, height = 4)
 ```
 
 This scatterplot shows a weak, positive association between weekly coffee consumption and the difference in rating of Swissbakers coffee vs Dunkin coffee. This generally indicates that participants who drink more coffee tend to have somewhat higher ratings to Swissbakers vs Dunkin. However, the points are widely dispersed across the full range of consumption levels, including some negative differences among moderate/heavy coffee drinkers and some of the largest rating differences occurring among light coffee drinkers.
@@ -270,6 +324,217 @@ summary(model2)
 
 This test yields a t-statistic = 0.946 with a p-value = 0.357 for the slope estimate. This means that weekly coffee consumption does not significantly predict an ability to taste the difference between Swissbakers and Dunkin coffee. Therefore, we fail to reject our null hypothesis. The intercept of 0.24 is the average taste difference for someone who drinks 0 cups of coffee per week. The slope suggests that for each additional cup of coffee drunk per week, the rating difference between Swissbakers and Dunkin in creases by about 0.08, which is vary small, and as we already stated, not statistically significant.
 
+## More analysis
+
+The baseline models above treat observations as independent, but our data has a within-subjects structure where each participant rated all three coffees. We now conduct more appropriate analyses that account for this repeated measures design.
+
+#### Paired Comparisons
+
+We will use paired t-tests to directly address our research questions. Since each participant tasted all three coffees, we can compare ratings within participants.
+
+**Research Question 1: Branding Effect (Flour vs Dunkin)**
+
+Can perception/branding create an illusory difference when the coffee is identical?
+
+Hypotheses:
+
+Let $\mu_D$ be the mean difference in ratings (Flour - Dunkin) across participants.
+
+$H_0: \mu_D = 0$ (no branding effect)
+
+$H_A: \mu_D \neq 0$ (branding affects ratings)
+
+```{r}
+# Branding effect: Flour vs Dunkin (same coffee, different cups)
+t.test(coffee_cleaned$flour, coffee_cleaned$dunkin, paired = TRUE)
+
+# Calculate effect size (Cohen's d for paired samples)
+branding_diff_mean <- mean(coffee_cleaned$branding_diff)
+branding_diff_sd <- sd(coffee_cleaned$branding_diff)
+cohens_d_branding <- branding_diff_mean / branding_diff_sd
+cohens_d_branding
+```
+
+**Research Question 2: Taste Difference (Swissbakers vs Dunkin)**
+
+Can people detect a real taste difference between higher and lower quality coffee?
+
+Hypotheses:
+
+Let $\mu_D$ be the mean difference in ratings (Swissbakers - Dunkin) across participants.
+
+$H_0: \mu_D = 0$ (no detectable taste difference)
+
+$H_A: \mu_D \neq 0$ (people can taste the difference)
+
+```{r}
+# Taste effect: Swissbakers vs Dunkin (different coffee quality)
+t.test(coffee_cleaned$swissbakers, coffee_cleaned$dunkin, paired = TRUE)
+
+# Calculate effect size
+taste_diff_mean <- mean(coffee_cleaned$taste_diff)
+taste_diff_sd <- sd(coffee_cleaned$taste_diff)
+cohens_d_taste <- taste_diff_mean / taste_diff_sd
+cohens_d_taste
+```
+
+**Additional Comparison: Swissbakers vs Flour**
+
+```{r}
+# Swissbakers vs Flour
+t.test(coffee_cleaned$swissbakers, coffee_cleaned$flour, paired = TRUE)
+```
+
+#### Improved Expertise Model
+
+Model 2 showed non-linearity and heteroskedasticity in the residuals. We will try a log transformation of `cupsperweek` to address this.
+
+```{r}
+# Log transformation (add 1 to avoid log(0))
+model2_log <- lm(taste_diff ~ log(cupsperweek + 1), data = coffee_cleaned)
+summary(model2_log)
+```
+
+```{r, fig.show='hold', out.width='75%', fig.align='center'}
+plot(model2_log, which = 1)
+plot(model2_log, which = 2)
+```
+
+**Alternative: Categorize coffee expertise**
+
+```{r}
+# Create expertise categories
+coffee_cleaned <- coffee_cleaned %>%
+  mutate(expertise = case_when(
+    cupsperweek <= 3 ~ "Low",
+    cupsperweek <= 7 ~ "Medium",
+    cupsperweek > 7 ~ "High"
+  ))
+
+coffee_cleaned$expertise <- factor(coffee_cleaned$expertise,
+                                    levels = c("Low", "Medium", "High"))
+
+# Compare taste discrimination across expertise levels
+model2_categorical <- lm(taste_diff ~ expertise, data = coffee_cleaned)
+summary(model2_categorical)
+
+# Visualize
+p <- ggplot(coffee_cleaned, aes(x = expertise, y = taste_diff, fill = expertise)) +
+  geom_boxplot(alpha = 0.8) +
+  labs(title = "Taste Discrimination by Coffee Expertise",
+       x = "Coffee Expertise Level",
+       y = "Taste Difference (Swissbakers - Dunkin)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+print(p)
+ggsave("figures/fig11_expertise_boxplot.pdf", p, width = 6, height = 4)
+```
+
+#### Branding Susceptibility and Expertise
+
+Does coffee expertise affect susceptibility to branding effects?
+
+```{r}
+# Model branding effect as function of expertise
+model_branding <- lm(branding_diff ~ cupsperweek, data = coffee_cleaned)
+summary(model_branding)
+
+# Visualize
+p <- ggplot(coffee_cleaned, aes(x = cupsperweek, y = branding_diff)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Branding Effect vs Coffee Consumption",
+       x = "Cups per Week",
+       y = "Branding Difference (Flour - Dunkin)") +
+  theme_minimal()
+print(p)
+ggsave("figures/fig12_branding_vs_consumption.pdf", p, width = 6, height = 4)
+```
+
+#### Distribution of Effects
+
+Visualize the distribution of branding and taste effects across participants.
+
+```{r, fig.width=10, fig.height=5}
+# Create combined plot
+effect_comparison <- coffee_cleaned %>%
+  select(branding_diff, taste_diff) %>%
+  pivot_longer(cols = everything(),
+               names_to = "effect_type",
+               values_to = "difference") %>%
+  mutate(effect_type = recode(effect_type,
+                               branding_diff = "Branding Effect\n(Flour - Dunkin)",
+                               taste_diff = "Taste Effect\n(Swissbakers - Dunkin)"))
+
+p <- ggplot(effect_comparison, aes(x = difference, fill = effect_type)) +
+  geom_histogram(binwidth = 1, color = "white", alpha = 0.7) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black", size = 1) +
+  facet_wrap(~ effect_type, nrow = 1) +
+  labs(title = "Distribution of Branding and Taste Effects",
+       subtitle = "Dashed line at 0 indicates no effect",
+       x = "Rating Difference",
+       y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none")
+print(p)
+ggsave("figures/fig13_effect_comparison.pdf", p, width = 10, height = 5)
+```
+
+```{r}
+# Summary statistics for effects
+cat("Branding Effect (Flour - Dunkin):\n")
+cat("  Mean:", round(mean(coffee_cleaned$branding_diff), 2), "\n")
+cat("  SD:", round(sd(coffee_cleaned$branding_diff), 2), "\n")
+cat("  Median:", median(coffee_cleaned$branding_diff), "\n")
+cat("  % Positive:", round(100 * mean(coffee_cleaned$branding_diff > 0), 1), "%\n\n")
+
+cat("Taste Effect (Swissbakers - Dunkin):\n")
+cat("  Mean:", round(mean(coffee_cleaned$taste_diff), 2), "\n")
+cat("  SD:", round(sd(coffee_cleaned$taste_diff), 2), "\n")
+cat("  Median:", median(coffee_cleaned$taste_diff), "\n")
+cat("  % Positive:", round(100 * mean(coffee_cleaned$taste_diff > 0), 1), "%\n")
+```
+
+#### Confidence Intervals for Mean Differences
+
+```{r, fig.width=8, fig.height=5}
+# Calculate confidence intervals for each comparison
+comparisons <- data.frame(
+  comparison = c("Flour vs Dunkin", "Swissbakers vs Dunkin", "Swissbakers vs Flour"),
+  mean_diff = c(
+    mean(coffee_cleaned$flour - coffee_cleaned$dunkin),
+    mean(coffee_cleaned$swissbakers - coffee_cleaned$dunkin),
+    mean(coffee_cleaned$swissbakers - coffee_cleaned$flour)
+  ),
+  lower_ci = c(
+    t.test(coffee_cleaned$flour, coffee_cleaned$dunkin, paired = TRUE)$conf.int[1],
+    t.test(coffee_cleaned$swissbakers, coffee_cleaned$dunkin, paired = TRUE)$conf.int[1],
+    t.test(coffee_cleaned$swissbakers, coffee_cleaned$flour, paired = TRUE)$conf.int[1]
+  ),
+  upper_ci = c(
+    t.test(coffee_cleaned$flour, coffee_cleaned$dunkin, paired = TRUE)$conf.int[2],
+    t.test(coffee_cleaned$swissbakers, coffee_cleaned$dunkin, paired = TRUE)$conf.int[2],
+    t.test(coffee_cleaned$swissbakers, coffee_cleaned$flour, paired = TRUE)$conf.int[2]
+  )
+)
+
+p <- ggplot(comparisons, aes(x = comparison, y = mean_diff)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), width = 0.2, size = 1) +
+  geom_point(size = 4, color = "darkblue") +
+  labs(title = "95% Confidence Intervals for Mean Rating Differences",
+       x = "Comparison",
+       y = "Mean Difference in Rating") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5))
+print(p)
+ggsave("figures/fig14_ci_plot.pdf", p, width = 8, height = 5)
+
+# Print the table
+print(comparisons)
+```
+
 ## Residual Analysis
 
 #### Model 1 Residual Analysis
@@ -297,102 +562,225 @@ In the Q-Q plot, the residuals align pretty well with the theoretical line, appr
 
 ## Extrema Analysis
 
+We check for influential observations and outliers that may be driving our results.
 
-## Modeling
-
-The baseline models above treated observations as independent, but our data has a within-subjects design where each participant rated all three coffees. We now fit mixed effects models that account for this repeated measures structure by including participant as a random effect.
-
-### Model 3: Mixed Effects Model for Coffee Type Differences
-
-We fit a mixed effects model with participant as a random intercept to account for individual differences in baseline ratings.
-
-```{r}
-# Create participant ID - each participant has 3 rows (one per coffee type)
-coffee_long <- coffee_long %>%
-  mutate(participant_id = rep(1:29, each = 3))
-
-# Fit mixed effects model
-model3 <- lmer(rating ~ coffee_type + (1 | participant_id), data = coffee_long)
-summary(model3)
-
-# Test for coffee type effect
-anova(model3)
-# If lmerTest is loaded, this will show p-values; otherwise shows F-values
-```
-
-The mixed effects model shows [results will appear here]. The random intercept for participant accounts for the correlation between ratings from the same person. The F-test tests whether mean ratings differ across coffee types.
-
-To test our specific research questions, we examine the estimated differences:
-
-```{r}
-# Extract fixed effects
-fixef(model3)
-
-# Branding effect: Flour - Dunkin (same coffee, different cup)
-branding_effect <- fixef(model3)["coffee_typeflour"]
-cat("Branding effect (Flour - Dunkin):", round(branding_effect, 3), "\n")
-
-# Taste effect: Swissbakers - Dunkin (different coffee)
-taste_effect <- fixef(model3)["coffee_typeswissbakers"]
-cat("Taste effect (Swissbakers - Dunkin):", round(taste_effect, 3), "\n")
-```
-
-### Model 4: Testing Expertise Moderation
-
-We now test whether coffee consumption (expertise) moderates the ability to detect taste differences by including an interaction between coffee type and cups per week.
-
-```{r}
-# Add cups per week to long format
-# Ensure participant_id exists (in case this chunk is run independently)
-if (!"participant_id" %in% names(coffee_long)) {
-  coffee_long <- coffee_long %>%
-    mutate(participant_id = rep(1:29, each = 3))
-}
-
-# Add cupsperweek by replicating each participant's value 3 times
-coffee_long <- coffee_long %>%
-  mutate(cupsperweek = rep(coffee$cupsperweek, each = 3))
-
-# Verify cupsperweek was added
-head(coffee_long %>% select(participant_id, coffee_type, rating, cupsperweek))
-
-# Fit model with interaction
-model4 <- lmer(rating ~ coffee_type * cupsperweek + (1 | participant_id), 
-               data = coffee_long)
-summary(model4)
-
-# Test for effects
-anova(model4)
-# If lmerTest is loaded, this will show p-values; otherwise shows F-values
-```
-
-The interaction term tests whether the relationship between coffee type and rating depends on weekly coffee consumption. Specifically, we're interested in whether the Swissbakers vs Dunkin difference is larger for heavier coffee drinkers.
-
-### Model Comparison
-
-We compare the models to see if including expertise improves model fit:
-
-```{r}
-# Compare models
-AIC(model3, model4)
-BIC(model3, model4)
-
-# Likelihood ratio test
-anova(model3, model4)
-```
-
-### Model Diagnostics
-
-We check the assumptions of our final model:
+#### Influence Analysis for Expertise Models
 
 ```{r, fig.show='hold', out.width='75%', fig.align='center'}
-# Residual plots
-plot(model4, which = 1)
-plot(model4, which = 2)
+# Cook's distance for Model 2 (original)
+plot(model2, which = 4)
+abline(h = 4/(nrow(coffee_cleaned) - length(coef(model2))), lty = 2, col = "red")
 
-# Check random effects
-qqnorm(ranef(model4)$participant_id[[1]], main = "Q-Q plot of random intercepts")
-qqline(ranef(model4)$participant_id[[1]])
+# Cook's distance for log-transformed model
+plot(model2_log, which = 4)
+abline(h = 4/(nrow(coffee_cleaned) - length(coef(model2_log))), lty = 2, col = "red")
+```
+
+```{r}
+# Identify influential points (Cook's D > 4/n)
+threshold <- 4 / nrow(coffee_cleaned)
+cooks_d <- cooks.distance(model2)
+influential_pts <- which(cooks_d > threshold)
+
+if(length(influential_pts) > 0) {
+  cat("Influential observations (Cook's D > 4/n):\n")
+  print(coffee_cleaned[influential_pts, c("cupsperweek", "taste_diff")])
+  cat("\nCook's distances:\n")
+  print(cooks_d[influential_pts])
+}
+```
+
+#### Leverage and Outliers
+
+```{r, fig.show='hold', out.width='75%', fig.align='center'}
+# Leverage vs residuals
+plot(model2, which = 5)
+```
+
+```{r}
+# Identify high leverage points
+hat_values <- hatvalues(model2)
+high_leverage <- which(hat_values > 2 * mean(hat_values))
+
+if(length(high_leverage) > 0) {
+  cat("High leverage observations:\n")
+  print(coffee_cleaned[high_leverage, c("cupsperweek", "taste_diff")])
+}
+```
+
+#### Check Normality of Differences (for paired t-tests)
+
+```{r, fig.show='hold', out.width='75%', fig.align='center'}
+# Q-Q plots for the differences
+par(mfrow = c(1, 2))
+qqnorm(coffee_cleaned$branding_diff, main = "Q-Q Plot: Branding Difference")
+qqline(coffee_cleaned$branding_diff)
+
+qqnorm(coffee_cleaned$taste_diff, main = "Q-Q Plot: Taste Difference")
+qqline(coffee_cleaned$taste_diff)
+par(mfrow = c(1, 1))
+```
+
+```{r}
+# Shapiro-Wilk test for normality
+shapiro.test(coffee_cleaned$branding_diff)
+shapiro.test(coffee_cleaned$taste_diff)
+```
+
+## Power Analysis
+
+Given our small sample size (n=29), we conduct power analyses to understand:
+
+1. How many participants would we need to detect our observed effect sizes with adequate power?
+2. What effect size would be detectable with our current sample at different significance levels?
+
+```{r}
+library(pwr)
+
+# Current sample size
+n <- nrow(coffee_cleaned)
+
+# Observed effect sizes from our data
+cohens_d_branding_obs <- mean(coffee_cleaned$branding_diff) / sd(coffee_cleaned$branding_diff)
+cohens_d_taste_obs <- mean(coffee_cleaned$taste_diff) / sd(coffee_cleaned$taste_diff)
+
+cat("Observed effect sizes:\n")
+cat("Branding effect (Cohen's d):", round(cohens_d_branding_obs, 3), "\n")
+cat("Taste effect (Cohen's d):", round(cohens_d_taste_obs, 3), "\n\n")
+```
+
+#### Sample Size for Observed Effect
+
+How many participants would we need to detect our observed effects with 80% power?
+
+```{r}
+# For branding effect
+power_branding <- pwr.t.test(d = cohens_d_branding_obs,
+                              sig.level = 0.05,
+                              power = 0.80,
+                              type = "paired")
+
+# For taste effect
+power_taste <- pwr.t.test(d = cohens_d_taste_obs,
+                          sig.level = 0.05,
+                          power = 0.80,
+                          type = "paired")
+
+cat("Sample size needed for 80% power (alpha = 0.05):\n")
+cat("Branding effect:", ceiling(power_branding$n), "participants\n")
+cat("Taste effect:", ceiling(power_taste$n), "participants\n\n")
+```
+
+#### Detectable Effect Size
+
+What effect size could we detect with n=29 at 80% power?
+
+```{r}
+# Detectable effect size with current sample
+detectable_effect <- pwr.t.test(n = n,
+                                 sig.level = 0.05,
+                                 power = 0.80,
+                                 type = "paired")
+
+cat("Minimum detectable effect size (Cohen's d) with n=29:\n")
+cat("At alpha = 0.05, power = 0.80:", round(detectable_effect$d, 3), "\n\n")
+```
+
+#### Power Achieved with Current Sample
+
+What power do we actually have with our current sample and observed effects?
+
+```{r}
+# Actual power for branding effect
+actual_power_branding <- pwr.t.test(n = n,
+                                     d = cohens_d_branding_obs,
+                                     sig.level = 0.05,
+                                     type = "paired")
+
+# Actual power for taste effect
+actual_power_taste <- pwr.t.test(n = n,
+                                  d = cohens_d_taste_obs,
+                                  sig.level = 0.05,
+                                  type = "paired")
+
+cat("Actual power achieved with n=29:\n")
+cat("Branding effect:", round(actual_power_branding$power, 3), "\n")
+cat("Taste effect:", round(actual_power_taste$power, 3), "\n\n")
+```
+
+#### Power Curves
+
+Visualize the relationship between sample size and power for our observed effects.
+
+```{r, fig.width=10, fig.height=5}
+# Generate power curves
+sample_sizes <- seq(10, 100, by = 5)
+
+power_branding_curve <- sapply(sample_sizes, function(n) {
+  pwr.t.test(n = n, d = cohens_d_branding_obs, sig.level = 0.05, type = "paired")$power
+})
+
+power_taste_curve <- sapply(sample_sizes, function(n) {
+  pwr.t.test(n = n, d = cohens_d_taste_obs, sig.level = 0.05, type = "paired")$power
+})
+
+# Create data frame for plotting
+power_df <- data.frame(
+  n = rep(sample_sizes, 2),
+  power = c(power_branding_curve, power_taste_curve),
+  effect = rep(c("Branding", "Taste"), each = length(sample_sizes))
+)
+
+p <- ggplot(power_df, aes(x = n, y = power, color = effect)) +
+  geom_line(size = 1) +
+  geom_hline(yintercept = 0.80, linetype = "dashed", color = "gray40") +
+  geom_vline(xintercept = 29, linetype = "dotted", color = "red") +
+  annotate("text", x = 29, y = 0.1, label = "Current n=29", hjust = -0.1, color = "red") +
+  annotate("text", x = 10, y = 0.80, label = "80% power", vjust = -0.5, color = "gray40") +
+  labs(title = "Power Curves for Observed Effect Sizes",
+       x = "Sample Size",
+       y = "Power",
+       color = "Effect Type") +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+print(p)
+ggsave("figures/fig15_power_curves.pdf", p, width = 10, height = 5)
+```
+
+#### Sensitivity Analysis: Different Significance Levels
+
+How does the required sample size change with different alpha levels?
+
+```{r}
+# Test different significance levels
+alpha_levels <- c(0.01, 0.05, 0.10)
+
+results <- data.frame(
+  alpha = alpha_levels,
+  n_branding = NA,
+  n_taste = NA
+)
+
+for (i in 1:length(alpha_levels)) {
+  # Branding
+  pwr_b <- pwr.t.test(d = cohens_d_branding_obs,
+                       sig.level = alpha_levels[i],
+                       power = 0.80,
+                       type = "paired")
+  results$n_branding[i] <- ceiling(pwr_b$n)
+
+  # Taste
+  pwr_t <- pwr.t.test(d = cohens_d_taste_obs,
+                       sig.level = alpha_levels[i],
+                       power = 0.80,
+                       type = "paired")
+  results$n_taste[i] <- ceiling(pwr_t$n)
+}
+
+cat("Sample size needed for 80% power at different alpha levels:\n")
+print(results)
 ```
 
 ## Conclusion
+
