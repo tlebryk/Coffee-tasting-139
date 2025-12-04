@@ -57,8 +57,10 @@ The dataset contains data from 29 participants, with row per participant with th
 
 We will focus on `flour`, `dunkin`, `swissbakers`, and `cupspwerweek` in our analysis.
 ```{r}
-# Remove time variables
-coffee_cleaned <- coffee %>% select(-c(time, time_indicator))
+# Remove time variables and add participant ID
+coffee_cleaned <- coffee %>%
+  select(-c(time, time_indicator)) %>%
+  mutate(participant_id = factor(row_number()))  # Factor for repeated measures ANOVA
 ```
 
 
@@ -152,10 +154,6 @@ Next, we'll explore relationships between variables, examining how the three cof
 Since each participant rated all three coffees, we can visualize individual trajectories to see how ratings changed across coffee types.
 
 ```{r, fig.width=10, fig.height=6}
-
-coffee_cleaned <- coffee_cleaned %>%
-  mutate(participant_id = row_number())
-
 # Reshape for trajectory plot
 coffee_trajectories <- coffee_cleaned %>%
   pivot_longer(cols = c(dunkin, flour, swissbakers),
@@ -290,17 +288,23 @@ $H_0: \mu_1 = \mu_2 = \mu_3$
 $H_A:$ at least one mean differs
 
 
-We will conduct a one-way ANOVA test using an F-statistic that follows $\sim F_{2, 84?}$ under the null distribution. We set $\alpha = 0.05$.
+We will conduct a **repeated measures ANOVA** test that properly accounts for the within-subjects design. Each participant is a "block" who rated all three coffees. The F-statistic follows $\sim F_{2, 56}$ under the null distribution. We set $\alpha = 0.05$.
 
 ```{r}
-model1 <- lm(rating ~ coffee_type, data = coffee_long)
-summary(model1)
+# Repeated measures ANOVA using participant id as error term
+model1_rm <- aov(rating ~ coffee_type + Error(participant_id),
+                 data = coffee_long)
+summary(model1_rm)
 
-anova(model1)
+aggregate(rating ~ coffee_type, data = coffee_long, mean)
 ```
 
 
-The overall F-test gave us an F-statistic = 1.90 with a p-value of 0.1558. Under our $\alpha = 0.05$, this means we do not have evidence that the mean ratings differ across Dunkin, Flour, and Swissbakers in this baseline model, so we fail to reject our null hypothesis. The intercept 4.21 represents the mean rating for Dunkin coffee in a Dunkin cup. Flour's estimate of 1.07 suggests that participants rated Dunkin coffee in a FLour cup slightly higher, on average, compared to Dunkin coffee in a Dunkin cup, the but p-value is not significant under our $\alpha$. The Swissbakers' estimate suggests modestly higher ratings thank Dunkin, but again this is not statistically significant. The $R^2 = 0.0433$, so this model does not explain much of the variability in the data.
+The repeated measures ANOVA gave us an F-statistic = 2.53 with a p-value = 0.0884 and **correct degrees of freedom** F(2, 56). Under our $\alpha = 0.05$, we do not have sufficient evidence that the mean ratings differ across Dunkin, Flour, and Swissbakers, so we fail to reject our null hypothesis. However, the result is marginally significant (p = 0.088), suggesting some evidence of differences in ratings across coffee types.
+
+The mean ratings are: Dunkin = 4.21, Flour = 5.28, Swissbakers = 4.97. Flour shows a numerically higher mean (+1.07 points vs Dunkin), and Swissbakers also shows a modest increase (+0.76 points vs Dunkin). While these differences are not statistically significant at the $\alpha = 0.05$ level, the p-value of 0.088 suggests the differences may be worth investigating further with paired comparisons.
+
+**Key advantage of repeated measures ANOVA:** By treating participant as a blocking factor, this analysis removes between-subject variability and provides a more powerful test of coffee type effects. The proper degrees of freedom (2, 56) reflect that we have 29 participants each providing 3 observations, not 87 independent observations.
 
 #### Model 2: Coffee Expertise vs Ratings
 
@@ -348,11 +352,11 @@ $H_A: \mu_D \neq 0$ (branding affects ratings)
 # Branding effect: Flour vs Dunkin (same coffee, different cups)
 t.test(coffee_cleaned$flour, coffee_cleaned$dunkin, paired = TRUE)
 
-# Calculate effect size (Cohen's d for paired samples)
 branding_diff_mean <- mean(coffee_cleaned$branding_diff)
 branding_diff_sd <- sd(coffee_cleaned$branding_diff)
-cohens_d_branding <- branding_diff_mean / branding_diff_sd
-cohens_d_branding
+cat("Branding effect: Flour vs Dunkin (same coffee, different cups)\n")
+cat("Mean difference:", branding_diff_mean, "\n")
+cat("Standard deviation:", branding_diff_sd, "\n")
 ```
 
 **Research Question 2: Taste Difference (Swissbakers vs Dunkin)**
@@ -417,6 +421,15 @@ coffee_cleaned$expertise <- factor(coffee_cleaned$expertise,
 # Compare taste discrimination across expertise levels
 model2_categorical <- lm(taste_diff ~ expertise, data = coffee_cleaned)
 summary(model2_categorical)
+
+# Calculate means and n for each expertise group
+group_summary <- coffee_cleaned %>%
+  group_by(expertise) %>%
+  summarise(
+    mean_taste_diff = mean(taste_diff),
+    n = n()
+  )
+print(group_summary)
 
 # Visualize
 p <- ggplot(coffee_cleaned, aes(x = expertise, y = taste_diff, fill = expertise)) +
@@ -537,22 +550,10 @@ print(comparisons)
 
 ## Residual Analysis
 
-#### Model 1 Residual Analysis
-
-```{r, fig.show='hold', out.width='75%', fig.align='center'}
-plot(model1, which = 1)
-plot(model1, which = 2)
-```
-
-The residuals vs fitted plot shows that the fitted values only fall into three values which correspond to the three coffee types. The spread looks pretty similar across the three coffee types and is pretty wide, indicating that most of the variability is within groups, not between. There is no clear pattern or curvature, the smoothing line is nearly flat, which suggests no major violations of linearity. There is no strong funnel shape, so our residuals appear to be homoskedastic.
-
-The Q-Q plot shows that the residuals follow the theoretical line closely through most of the distribution, indicating that the normality assumption is largely met in our dataset. There is a slight departure in the lower tail, but these are small given the discrete 1-10 rating scale. There don't appear to be many outliers that would threaten the overall model fit.
-
-
 #### Model 2 Residual Analysis
 ```{r, fig.show='hold', out.width='75%', fig.align='center'}
-plot(model1, which = 1)
-plot(model1, which = 2)
+plot(model2, which = 1)
+plot(model2, which = 2)
 ```
 
 The residuals don't appear to sit around a flat line in the residuals vs fitted plot. The smoothing curve fluctuates across the line at 0, suggesting a non-linear pattern, meaning the relationship between coffee consumption and taste difference may not be purely linear. The vertical spread of the residuals increases as the fitted values decrease, indicating heteroskedasticity. Given the violations of linearity, we may want to transform weekly coffee consumpion in our final model.
